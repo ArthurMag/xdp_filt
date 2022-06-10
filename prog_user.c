@@ -112,7 +112,7 @@ void do_load(int argc, char** argv){
 			bpf_object__for_each_map(map, bpf_obj) {
 				snprintf(check_map_path, PATH_MAX, "%s/%s", pin_map_path, bpf_map__name(map));
 				printf("Map path: %s\n", check_map_path);
-				if (access(check_map_path, F_OK) != -1) {
+				if (access(check_map_path, F_OK) == 0) {
 					err = bpf_object__unpin_maps(bpf_obj, pin_map_path);
 				}
 			}
@@ -239,6 +239,7 @@ void PrintIpHelp()
                 "unblock:                 Unblock ip if blocked\n"
 		"check:                   Check if ip is blocked\n"
 		"dump:                    Show all blocked ip\n"
+		"type:                    Specify ip as v4 or v6 (default v4)\n"
                 "help:                    Show help\n");
        // exit(1);
 }
@@ -247,10 +248,12 @@ struct ip_config {
         char interface[6];
         int ifindex;
         __u32 ip;
+	uint8_t ip6[16];
 	char action;
 	int value;
 	bool dump;
 	int map_fd;
+	int type;
 };
 
 void do_ip(int argc, char** argv) {
@@ -258,13 +261,16 @@ void do_ip(int argc, char** argv) {
         char ifname[6];
         ip_cfg.ifindex = -1;
         ip_cfg.ip = -1;
+	ip_cfg.ip6[0] = -1;
 	ip_cfg.value = -1;
 	ip_cfg.dump = false;
 	ip_cfg.map_fd = -1;
 	ip_cfg.action = ' ';
-	char ip[17];
+	ip_cfg.type = 4;
 	int err;
-        const char* const ip_short_opts = "i:p:b::ucdh";
+	char ip[INET6_ADDRSTRLEN];
+	strncpy(ip, "", sizeof(ip));
+        const char* const ip_short_opts = "i:p:b::ucdt:h";
         struct option ip_long_opts[] = {
             {"interface",  required_argument, NULL, 'i'},
             {"ip",         required_argument, NULL, 'p'},
@@ -272,6 +278,7 @@ void do_ip(int argc, char** argv) {
             {"unblock",    no_argument,       NULL, 'u'},
 	    {"check",      no_argument,       NULL, 'c'},
 	    {"dump",       no_argument,       NULL, 'd'},
+	    {"type",	   required_argument, NULL, 't'},
 	    {"help",       no_argument,       NULL, 'h'},
             {NULL,         no_argument,       NULL,  0}
         };
@@ -294,11 +301,8 @@ void do_ip(int argc, char** argv) {
                         break;
                 case 'p':
 			strncpy(ip, optarg, sizeof(ip));
-			struct sockaddr_in sa_param;
-			inet_pton(AF_INET, ip, &(sa_param.sin_addr));
-			ip_cfg.ip = sa_param.sin_addr.s_addr;
-			printf("The ip to use is %s/%u\n", ip, ip_cfg.ip);
-                        break;
+			printf("Converted IP: %s\n", ip);
+			break;
                 case 'b':
 			if (ip_cfg.action == ' ') {
 				ip_cfg.action = 'b';
@@ -337,7 +341,18 @@ void do_ip(int argc, char** argv) {
 		case 'd':
 			ip_cfg.dump = true;
                         break;
-                case 'h':
+                case 't':
+			if (strcmp(optarg, "6") == 0) {
+				ip_cfg.type = 6;
+			}
+			else {
+				if (strcmp(optarg, "4") == 0) {
+					ip_cfg.type = 4;
+				}
+				else { printf("Wrong type optarg: %s", optarg); }
+			}
+			break;
+		case 'h':
                         PrintIpHelp();
                         break;
                 case '?':
@@ -347,11 +362,41 @@ void do_ip(int argc, char** argv) {
                         break;
                 }
 	}
-	//printf("INFO: Interface %s\nIfindex %i\nIP %u\nAction %s\nValue %i\nDump %i\n", ip_cfg.interface, ip_cfg.ifindex, ip_cfg.ip, ip_cfg.action, ip_cfg.value, ip_cfg.dump);
-	char* map_name = "blocked_ip_map";
+	//printf("INFO: Interface %s\nIfindex %i\nIP %u\nAction %c\nValue %i\nDump %i\n", ip_cfg.interface, ip_cfg.ifindex, ip_cfg.ip, ip_cfg.action, ip_cfg.value, ip_cfg.dump);
+	struct sockaddr_in sa_param;
+	struct sockaddr_in6 sa6_param;
+	char map_name[30];
+	printf("IP: %s\n", ip);
+	if (ip_cfg.type == 6) {
+		strcpy(map_name, "blocked_ip6_map");
+		if (strcmp(ip, "") != 0) {
+			if (inet_pton(AF_INET6, ip, &(sa6_param.sin6_addr)) != 1) {
+				printf("Error, not valid ipv6\n");
+				exit(1);
+			}
+			for (int i = 0; i < 16; i++) {
+				ip_cfg.ip6[i] = sa6_param.sin6_addr.s6_addr[i];
+			}
+			printf("\n");
+		}
+	}
+	else {
+		if (ip_cfg.type == 4) {
+			strcpy(map_name, "blocked_ip4_map");
+			if (strcmp(ip, "") != 0) {
+				if (inet_pton(AF_INET, ip, &(sa_param.sin_addr)) != 1) {
+					printf("Error, not valid ipv4\n");
+					exit(1);
+				}
+				ip_cfg.ip = sa_param.sin_addr.s_addr;
+				printf("The ip to use is %s/%u\n", ip, ip_cfg.ip);
+			}
+		}
+		else { printf("Wrong --type argument, use '4' or '6'\n"); }
+	}
 	char map_path[PATH_MAX];
 	snprintf(map_path, PATH_MAX, "%s/%s/%s", pin_basedir, ip_cfg.interface, map_name);
-	if (access(map_path, F_OK) != -1) {
+	if (access(map_path, F_OK) == 0) {
 		ip_cfg.map_fd = bpf_obj_get(map_path);
 		printf("Map fd: %i\n", ip_cfg.map_fd);
 	}
@@ -361,34 +406,62 @@ void do_ip(int argc, char** argv) {
 		}
 	//рассмотреть ошибки всякие
 
-	switch (ip_cfg.action) {
-	case 'b':
-		err = bpf_map_update_elem(ip_cfg.map_fd, &ip_cfg.ip, &ip_cfg.value, BPF_ANY);
-		break;
-	case 'u':
-		err = bpf_map_delete_elem(ip_cfg.map_fd, &ip_cfg.ip);
-		break;
-	case 'c':
-		err = bpf_map_lookup_elem(ip_cfg.map_fd, &ip_cfg.ip, &ip_cfg.value);
-		if (err == 0) {
-			printf("That ip is blocked\n");
+	if (strcmp(ip, "") != 0) {
+		switch (ip_cfg.action) {
+		case 'b':
+			if (ip_cfg.ip != -1) {
+				err = bpf_map_update_elem(ip_cfg.map_fd, &ip_cfg.ip, &ip_cfg.value, BPF_ANY);
 			}
-		else { printf("That ip is not blocked\n"); }
-		break;
-	case ' ':
-		break;
-	default:
-		break;
+			else {err = bpf_map_update_elem(ip_cfg.map_fd, &ip_cfg.ip6, &ip_cfg.value, BPF_ANY); }
+			break;
+		case 'u':
+			if (ip_cfg.ip != -1) {
+				err = bpf_map_delete_elem(ip_cfg.map_fd, &ip_cfg.ip);
+			}
+			else {err = bpf_map_delete_elem(ip_cfg.map_fd, &ip_cfg.ip6); }
+			break;
+		case 'c':
+			if (ip_cfg.ip != -1) {
+				err = bpf_map_lookup_elem(ip_cfg.map_fd, &ip_cfg.ip, &ip_cfg.value);
+			}
+			else {err = bpf_map_lookup_elem(ip_cfg.map_fd, &ip_cfg.ip6, &ip_cfg.value); }
+			if (err == 0) {
+				printf("That ip is blocked\n");
+			}
+			else { printf("That ip is not blocked\n"); }
+			break;
+		case ' ':
+			if (!ip_cfg.dump) {
+				printf("Specify what to do with that ip: --block; --unblock; --check\n");
+			}
+			break;
+		default:
+			break;
+		}
 	}
 	if (ip_cfg.dump) {
 		__u32 key, next_key, value;
-		struct in_addr ip_addr;
-		printf("IP map elements:\nKey		Value\n");
-		while (bpf_map_get_next_key(ip_cfg.map_fd, &key, &next_key) == 0) {
-			bpf_map_lookup_elem(ip_cfg.map_fd, &next_key, &value);
-			ip_addr.s_addr = next_key;
-			printf("%s		%u\n", inet_ntoa(ip_addr), value);
-			key = next_key;
+		__int128 key6, next_key6;
+        	struct sockaddr_in6 so6_param;
+		char str[INET6_ADDRSTRLEN];
+		if (ip_cfg.type == 4) {
+			printf("IP4 map elements:\nKey		Value\n");
+			while (bpf_map_get_next_key(ip_cfg.map_fd, &key, &next_key) == 0) {
+				bpf_map_lookup_elem(ip_cfg.map_fd, &next_key, &value);
+				inet_ntop(AF_INET, &next_key, str, INET_ADDRSTRLEN);
+				printf("%s		%u\n", str, value);
+				key = next_key;
+			}
+		}
+		else {
+			printf("IP6 map elements:\nKey				Value\n");
+                        while (bpf_map_get_next_key(ip_cfg.map_fd, &key6, &next_key6) == 0) {
+                                bpf_map_lookup_elem(ip_cfg.map_fd, &next_key6, &value);
+				inet_ntop(AF_INET6, &next_key6, str, INET6_ADDRSTRLEN);
+                                printf("%s              %u\n", str, value);
+                                key6 = next_key6;
+                        }
+
 		}
 	}
 	exit(1);
@@ -498,7 +571,7 @@ void do_port(int argc, char** argv) {
 			break;
 		}
 	}
-	/*Пока что не учитывая тип*/
+	/*не учитываем тип*/
 	char* map_name = "blocked_port_map";
 	char map_path[PATH_MAX];
 	snprintf(map_path, PATH_MAX, "%s/%s/%s", pin_basedir, port_cfg.interface, map_name);
@@ -579,9 +652,6 @@ void ProcessArgs(int argc, char** argv)
 		}
 	}
 }
-
-
-
 
 
 int main(int argc, char **argv)
