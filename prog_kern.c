@@ -1,8 +1,9 @@
-
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <arpa/inet.h>
 
 struct bpf_map_def SEC("maps") blocked_ip4_map = {
 	.type        = BPF_MAP_TYPE_HASH,
@@ -33,27 +34,50 @@ int  xdp_filter_func(struct xdp_md *ctx)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
-
 	struct ethhdr *eth = data;
-	if ((void*)eth + sizeof(*eth) <= data_end) {
-		struct iphdr *ip = data + sizeof(*eth);
-		if ((void*)ip + sizeof(*ip) <= data_end) {
-			__u32 ip_src = ip->saddr;
-			__u32 ip_dest = ip->daddr;
-			int *value_src = bpf_map_lookup_elem(&blocked_ip4_map, &ip_src);
-			if (value_src) {
-				if ((*value_src == 0) || (*value_src == 1)){
-					return XDP_DROP;
-				}
-			}
-			int *value_dest = bpf_map_lookup_elem(&blocked_ip4_map, &ip_dest);
-			if (value_dest) {
-                                if ((*value_dest == 0) || (*value_dest == 2)){
-                                        return XDP_DROP;
-                                }
-                        }
 
-			int *value2 = bpf_map_lookup_elem(&blocked_port_map, &ip_src);
+	if ((void*)eth + sizeof(*eth) <= data_end) {
+		if (ntohs(eth->h_proto) == ETH_P_IP) {
+			struct iphdr *ip = data + sizeof(*eth);
+			if ((void*)ip + sizeof(*ip) <= data_end) {
+				__u32 ip_src = ip->saddr;
+				__u32 ip_dest = ip->daddr;
+				int *value_src = bpf_map_lookup_elem(&blocked_ip4_map, &ip_src);
+				if (value_src) {
+					if ((*value_src == 0) || (*value_src == 1)){
+						return XDP_DROP;
+					}
+				}
+				int *value_dest = bpf_map_lookup_elem(&blocked_ip4_map, &ip_dest);
+				if (value_dest) {
+                                	if ((*value_dest == 0) || (*value_dest == 2)){
+                                        	return XDP_DROP;
+                        	        }
+                        	}
+			}
+			/*int *value2 = bpf_map_lookup_elem(&blocked_port_map, &ip_src);*/
+			return XDP_PASS;
+		}
+		if (ntohs(eth->h_proto) == ETH_P_IPV6) {
+			struct ipv6hdr *ip6 = data + sizeof(*eth);
+			if ((void*)ip6 + sizeof(struct ipv6hdr) <= data_end) {
+                        	struct in6_addr ip_src = ip6->saddr;
+                        	struct in6_addr ip_dest = ip6->daddr;
+				int *value_src = bpf_map_lookup_elem(&blocked_ip6_map, &ip_src.s6_addr);
+				if (value_src) {
+                                        if ((*value_src == 0) || (*value_src == 1)){
+                                                return XDP_DROP;
+                                        }
+                                }
+                                int *value_dest = bpf_map_lookup_elem(&blocked_ip6_map, &ip_dest.s6_addr);
+                                if (value_dest) {
+                                        if ((*value_dest == 0) || (*value_dest == 2)){
+                                                return XDP_DROP;
+                                        }
+                                }
+
+			}
+		return XDP_PASS;
 		}
 	}
 	return  XDP_PASS;
