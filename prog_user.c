@@ -374,6 +374,9 @@ void do_ip(int argc, char** argv) {
 				printf("Error, not valid ipv6\n");
 				exit(1);
 			}
+			/*if (inet_ntop(AF_INET6, &(sa6_param.sin6_addr), ip, INET6_ADDRSTRLEN) == NULL) {
+				printf("Error with convertion back");
+			}*/
 			for (int i = 0; i < 16; i++) {
 				ip_cfg.ip6[i] = sa6_param.sin6_addr.s6_addr[i];
 			}
@@ -454,7 +457,7 @@ void do_ip(int argc, char** argv) {
 			}
 		}
 		else {
-			printf("IP6 map elements:\nKey				Value\n");
+			printf("IP6 map elements:\nKey          Value\n");
                         while (bpf_map_get_next_key(ip_cfg.map_fd, &key6, &next_key6) == 0) {
                                 bpf_map_lookup_elem(ip_cfg.map_fd, &next_key6, &value);
 				inet_ntop(AF_INET6, &next_key6, str, INET6_ADDRSTRLEN);
@@ -484,7 +487,7 @@ void PrintPortHelp()
 struct port_config {
 	char interface[6];
 	int ifindex;
-	__u32 port;
+	__u16 port;
 	char action;
 	bool dump;
 	int map_fd;
@@ -500,7 +503,6 @@ void do_port(int argc, char** argv) {
 	port_cfg.map_fd = -1;
 	port_cfg.action = ' ';
 	port_cfg.type = 't';
-	char port[17];
 	int err;
 	const char* const port_short_opts = "i:p:bucdt:h";
 	struct option port_long_opts[] = {
@@ -532,8 +534,8 @@ void do_port(int argc, char** argv) {
 			else { printf("Wrong interface name\n"); }
 			break;
 		case 'p':
-			port_cfg.port = atoi(optarg);
-			printf("The port to use is %u\n", port_cfg.port);
+			port_cfg.port = htons(atoi(optarg));
+			printf("The port to use is %u\n", ntohs(port_cfg.port));
 			break;
 		case 'b':
 			if (port_cfg.action == ' ') {
@@ -560,6 +562,9 @@ void do_port(int argc, char** argv) {
 			if (strcmp(optarg, "udp") == 0) {
 				port_cfg.type = 'u';
 			}
+			else {
+				printf("Wrong optarg for type, assuming TCP..\n");
+			}
 			break;
 		case 'h':
 			PrintPortHelp();
@@ -571,46 +576,65 @@ void do_port(int argc, char** argv) {
 			break;
 		}
 	}
-	/*не учитываем тип*/
-	char* map_name = "blocked_port_map";
+	char map_name[] = "blocked_port_t_map";
+	switch (port_cfg.type) {
+	case 't':
+		if (strcmp(map_name, "blocked_port_t_map") != 0) {
+			strcpy(map_name, "blocked_port_t_map");
+		}
+		break;
+	case 'u':
+		strcpy(map_name, "blocked_port_u_map");
+		break;
+	default:
+		printf("Wrong type?%c\n", port_cfg.type);
+		exit(1);
+		break;
+	}
 	char map_path[PATH_MAX];
 	snprintf(map_path, PATH_MAX, "%s/%s/%s", pin_basedir, port_cfg.interface, map_name);
-	if (access(map_path, F_OK) != -1) {
+	if (access(map_path, F_OK) == 0) {
 		port_cfg.map_fd = bpf_obj_get(map_path);
 		printf("Map fd: %i\n", port_cfg.map_fd);
 	}
 	else {
-		printf("Can't access ip map\n");
+		printf("Can't access port map\n");
 		exit(1);
 	}
 	//рассмотреть ошибки всякие
 
 	__u32 value = 0;
-	switch (port_cfg.action) {
-	case 'b':
-		err = bpf_map_update_elem(port_cfg.map_fd, &port_cfg.port, &value, BPF_ANY);
-		break;
-	case 'u':
-		err = bpf_map_delete_elem(port_cfg.map_fd, &port_cfg.port);
-		break;
-	case 'c':
-		err = bpf_map_lookup_elem(port_cfg.map_fd, &port_cfg.port, &value);
-		if (err == 0) {
-			printf("That ip is blocked\n");
+	if (port_cfg.port != -1) {
+		switch (port_cfg.action) {
+		case 'b':
+			err = bpf_map_update_elem(port_cfg.map_fd, &port_cfg.port, &value, BPF_ANY);
+			break;
+		case 'u':
+			err = bpf_map_delete_elem(port_cfg.map_fd, &port_cfg.port);
+			break;
+		case 'c':
+			err = bpf_map_lookup_elem(port_cfg.map_fd, &port_cfg.port, &value);
+			if (err == 0) {
+				printf("That port is blocked\n");
+			}
+			else { printf("That port is not blocked\n"); }
+			break;
+		case ' ':
+			if (!port_cfg.dump) {
+				printf("Specify what to do with that port: --block; --unblock; --check\n");
+			}
+			break;
+		default:
+			break;
 		}
-		else { printf("That ip is not blocked\n"); }
-		break;
-	case ' ':
-		break;
-	default:
-		break;
 	}
 	if (port_cfg.dump) {
-		__u32 key, next_key, value;
+		__u16 key, next_key;
+		__u32  value;
 		printf("Port map elements:\nKeys\n");
 		while (bpf_map_get_next_key(port_cfg.map_fd, &key, &next_key) == 0) {
 			bpf_map_lookup_elem(port_cfg.map_fd, &next_key, &value);
-			printf("%u\n", next_key);
+			printf("%u\n", ntohs(next_key));
 			key = next_key;
 		}
 	}
@@ -652,6 +676,9 @@ void ProcessArgs(int argc, char** argv)
 		}
 	}
 }
+
+
+
 
 
 int main(int argc, char **argv)

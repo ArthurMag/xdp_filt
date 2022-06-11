@@ -2,6 +2,8 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 #include <linux/ipv6.h>
 #include <arpa/inet.h>
 
@@ -20,14 +22,19 @@ struct bpf_map_def SEC("maps") blocked_ip6_map = {
 };
 
 
-struct bpf_map_def SEC("maps") blocked_port_map = {
+struct bpf_map_def SEC("maps") blocked_port_t_map = {
 	.type        = BPF_MAP_TYPE_HASH,
-	.key_size    = sizeof(int),
+	.key_size    = sizeof(__u16),
 	.value_size  = sizeof(int),
 	.max_entries = 20,
 };
 
-
+struct bpf_map_def SEC("maps") blocked_port_u_map = {
+        .type        = BPF_MAP_TYPE_HASH,
+        .key_size    = sizeof(__u16),
+        .value_size  = sizeof(int),
+        .max_entries = 20,
+};
 
 SEC("xdp_filter")
 int  xdp_filter_func(struct xdp_md *ctx)
@@ -54,8 +61,37 @@ int  xdp_filter_func(struct xdp_md *ctx)
                                         	return XDP_DROP;
                         	        }
                         	}
+				if (ip->protocol == IPPROTO_TCP) {
+					struct tcphdr *tcp = (void*)ip + sizeof(*ip);
+					if ((void*)tcp + sizeof(*tcp) <= data_end) {
+						__u16 tcp_src = tcp->source;
+						int *tcp_value_src = bpf_map_lookup_elem(&blocked_port_t_map, &tcp_src);
+						__u16 tcp_dest = tcp->dest;
+						int *tcp_value_dest = bpf_map_lookup_elem(&blocked_port_t_map, &tcp_dest);
+						if (tcp_value_src) {
+                 					return XDP_DROP;
+						}
+						/*if (tcp_value_dest) { //верификатор ругается
+							return XDP_DROP;
+						}*/
+					}
+				}
+				if (ip->protocol == IPPROTO_UDP) {
+					struct udphdr *udp = (void*)ip + sizeof(*ip);
+					if ((void*)udp + sizeof(*udp) <= data_end) {
+						__u16 udp_src = udp->source;
+						int *udp_value_src = bpf_map_lookup_elem(&blocked_port_u_map, &udp_src);
+                                                __u16 udp_dest = udp->dest;
+                                                int *udp_value_dest = bpf_map_lookup_elem(&blocked_port_u_map, &udp_dest);
+						if (udp_value_src) {
+							return XDP_DROP;
+						}
+						/*if (udp_value_dest) { //верификатор ругается
+                                                        return XDP_DROP;
+                                                }*/
+					}
+				}
 			}
-			/*int *value2 = bpf_map_lookup_elem(&blocked_port_map, &ip_src);*/
 			return XDP_PASS;
 		}
 		if (ntohs(eth->h_proto) == ETH_P_IPV6) {
@@ -75,7 +111,36 @@ int  xdp_filter_func(struct xdp_md *ctx)
                                                 return XDP_DROP;
                                         }
                                 }
-
+				if (ip6->nexthdr == IPPROTO_TCP) {
+					struct tcphdr *tcp = (void*)ip6 + sizeof(*ip6);
+                                        if ((void*)tcp + sizeof(*tcp) <= data_end) {
+                                                __u16 tcp_src = tcp->source;
+                                                int *tcp_value_src = bpf_map_lookup_elem(&blocked_port_t_map, &tcp_src);
+                                                __u16 tcp_dest = tcp->dest;
+                                                int *tcp_value_dest = bpf_map_lookup_elem(&blocked_port_t_map, &tcp_dest);
+                                                if (tcp_value_src) {
+                                                        return XDP_DROP;
+                                                }
+                                                /*if (tcp_value_dest) { //верификатор ругается
+                                                        return XDP_DROP;
+                                                }*/
+                                        }
+				}
+				if (ip6->nexthdr == IPPROTO_UDP) {
+					struct udphdr *udp = (void*)ip6 + sizeof(*ip6);
+                                        if ((void*)udp + sizeof(*udp) <= data_end) {
+                                                __u16 udp_src = udp->source;
+                                                int *udp_value_src = bpf_map_lookup_elem(&blocked_port_u_map, &udp_src);
+                                                __u16 udp_dest = udp->dest;
+                                                int *udp_value_dest = bpf_map_lookup_elem(&blocked_port_u_map, &udp_dest);
+                                                if (udp_value_src) {
+                                                        return XDP_DROP;
+                                                }
+                                                /*if (udp_value_dest) { //верификатор ругается
+                                                        return XDP_DROP;
+                                                }*/
+                                        } // перенести потом в отдельную функцию, чтобы не повторять код
+				}
 			}
 		return XDP_PASS;
 		}
